@@ -1,0 +1,127 @@
+name: Manual Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      robot_repo:
+        description: 'Robot repository URL'
+        required: true
+        default: 'https://github.com/joshyorko/fetch-repos-bot'
+      robot_branch:
+        description: 'Robot branch/tag'
+        required: false
+        default: 'main'
+      include_holotree:
+        description: 'Pre-build Holotree for offline mode'
+        required: true
+        type: boolean
+        default: true
+      output_name:
+        description: 'Output assistant name (without .py)'
+        required: false
+        default: 'assistant'
+
+jobs:
+  build:
+    name: Build Custom Assistant
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download RCC
+        run: |
+          echo "Downloading latest RCC..."
+          curl -L https://downloads.robocorp.com/rcc/releases/latest/linux64/rcc -o rcc
+          chmod +x rcc
+          ./rcc version
+
+      - name: Clone robot repository
+        run: |
+          echo "Cloning ${{ github.event.inputs.robot_repo }} (branch: ${{ github.event.inputs.robot_branch }})"
+          git clone --depth 1 --branch ${{ github.event.inputs.robot_branch }} ${{ github.event.inputs.robot_repo }} robot-project
+          
+          # Show robot structure
+          echo "Robot structure:"
+          find robot-project -name "robot.yaml" -o -name "*.py" | head -20
+
+      - name: Build Holotree
+        if: github.event.inputs.include_holotree == 'true'
+        run: |
+          echo "Pre-building Holotree for offline execution..."
+          ./rcc holotree variables robot-project/robot.yaml
+          
+          echo "Holotree size:"
+          du -sh ~/.robocorp || echo "Could not measure"
+
+      - name: Build self-extracting assistant
+        run: |
+          OUTPUT="${{ github.event.inputs.output_name }}.py"
+          
+          echo "Building $OUTPUT..."
+          
+          if [ "${{ github.event.inputs.include_holotree }}" == "true" ] && [ -d "$HOME/.robocorp" ]; then
+            python builder.py \
+              --rcc rcc \
+              --rcc-home "$HOME/.robocorp" \
+              --robot robot-project \
+              --output "$OUTPUT"
+          else
+            python builder.py \
+              --rcc rcc \
+              --robot robot-project \
+              --output "$OUTPUT"
+          fi
+          
+          echo "Build complete!"
+          ls -lh "$OUTPUT"
+
+      - name: Validate assistant
+        run: |
+          OUTPUT="${{ github.event.inputs.output_name }}.py"
+          
+          echo "Validating $OUTPUT..."
+          
+          # Check for payload marker
+          if grep -q "===RCC_PAYLOAD_START===" "$OUTPUT"; then
+            echo "✓ Payload marker found"
+          else
+            echo "✗ ERROR: No payload marker"
+            exit 1
+          fi
+          
+          # Check size
+          SIZE=$(stat -c%s "$OUTPUT")
+          echo "Size: $SIZE bytes ($(($SIZE / 1024 / 1024)) MB)"
+          
+          if [ "$SIZE" -lt 10000 ]; then
+            echo "✗ ERROR: File too small"
+            exit 1
+          fi
+          
+          echo "✓ Validation passed"
+
+      - name: Upload assistant
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.output_name }}
+          path: ${{ github.event.inputs.output_name }}.py
+          retention-days: 30
+
+      - name: Job summary
+        run: |
+          echo "## ✅ Build Successful" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Assistant:** ${{ github.event.inputs.output_name }}.py" >> $GITHUB_STEP_SUMMARY
+          echo "**Robot:** ${{ github.event.inputs.robot_repo }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.event.inputs.robot_branch }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Holotree:** ${{ github.event.inputs.include_holotree }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Download" >> $GITHUB_STEP_SUMMARY
+          echo "Go to **Artifacts** section above to download your assistant" >> $GITHUB_STEP_SUMMARY

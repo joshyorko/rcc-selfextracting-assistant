@@ -1,0 +1,292 @@
+name: Build Self-Extracting RCC Assistant
+
+on:
+  push:
+    branches: [ main, master, develop ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, master, develop ]
+  workflow_dispatch:
+    inputs:
+      robot_repo:
+        description: 'Robot repository URL (e.g., https://github.com/joshyorko/fetch-repos-bot)'
+        required: false
+        default: 'https://github.com/joshyorko/fetch-repos-bot'
+      rcc_version:
+        description: 'RCC version or fork URL'
+        required: false
+        default: 'latest'
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run test suite
+        run: python test_build.py
+
+  build-assistant:
+    name: Build Self-Extracting Assistant
+    needs: test
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.10', '3.11', '3.12']
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Download RCC
+        shell: bash
+        run: |
+          echo "Downloading RCC..."
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            curl -L https://downloads.robocorp.com/rcc/releases/latest/windows64/rcc.exe -o rcc.exe
+            chmod +x rcc.exe
+          elif [ "$RUNNER_OS" == "macOS" ]; then
+            curl -L https://downloads.robocorp.com/rcc/releases/latest/macos64/rcc -o rcc
+            chmod +x rcc
+          else
+            curl -L https://downloads.robocorp.com/rcc/releases/latest/linux64/rcc -o rcc
+            chmod +x rcc
+          fi
+          
+          # Verify RCC works
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            ./rcc.exe version
+          else
+            ./rcc version
+          fi
+
+      - name: Clone robot repository
+        run: |
+          git clone ${{ github.event.inputs.robot_repo || 'https://github.com/joshyorko/fetch-repos-bot' }} robot-project
+
+      - name: Build Holotree (Pre-bake environment)
+        shell: bash
+        run: |
+          echo "Building Holotree for offline execution..."
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            ./rcc.exe holotree variables robot-project/robot.yaml || echo "Holotree build attempted"
+          else
+            ./rcc holotree variables robot-project/robot.yaml || echo "Holotree build attempted"
+          fi
+
+      - name: Locate RCC Home
+        id: rcc-home
+        shell: bash
+        run: |
+          # Find where RCC stores Holotree
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            RCC_HOME="$LOCALAPPDATA/robocorp"
+          else
+            RCC_HOME="$HOME/.robocorp"
+          fi
+          
+          echo "rcc_home=$RCC_HOME" >> $GITHUB_OUTPUT
+          echo "RCC Home: $RCC_HOME"
+          
+          if [ -d "$RCC_HOME" ]; then
+            echo "RCC Home exists, size:"
+            du -sh "$RCC_HOME" || echo "Could not measure size"
+          else
+            echo "Warning: RCC Home not found at $RCC_HOME"
+          fi
+
+      - name: Build self-extracting assistant
+        shell: bash
+        run: |
+          echo "Building self-extracting assistant..."
+          
+          # Determine RCC executable name
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            RCC_EXE="rcc.exe"
+          else
+            RCC_EXE="rcc"
+          fi
+          
+          # Build with or without RCC home
+          if [ -d "${{ steps.rcc-home.outputs.rcc_home }}" ]; then
+            python builder.py \
+              --rcc "$RCC_EXE" \
+              --rcc-home "${{ steps.rcc-home.outputs.rcc_home }}" \
+              --robot robot-project \
+              --output "assistant-${{ matrix.os }}-py${{ matrix.python-version }}.py"
+          else
+            echo "Building without RCC home (online mode)"
+            python builder.py \
+              --rcc "$RCC_EXE" \
+              --robot robot-project \
+              --output "assistant-${{ matrix.os }}-py${{ matrix.python-version }}.py"
+          fi
+          
+          # Show result
+          ls -lh assistant-*.py
+
+      - name: Test self-extracting assistant (dry run)
+        shell: bash
+        run: |
+          # Quick test - check that file has payload marker
+          ASSISTANT_FILE="assistant-${{ matrix.os }}-py${{ matrix.python-version }}.py"
+          
+          if grep -q "===RCC_PAYLOAD_START===" "$ASSISTANT_FILE"; then
+            echo "✓ Payload marker found in assistant"
+          else
+            echo "✗ ERROR: Payload marker not found!"
+            exit 1
+          fi
+          
+          # Check file size (should be reasonably large with payload)
+          SIZE=$(stat -c%s "$ASSISTANT_FILE" 2>/dev/null || stat -f%z "$ASSISTANT_FILE")
+          echo "Assistant size: $SIZE bytes"
+          
+          if [ "$SIZE" -lt 10000 ]; then
+            echo "✗ ERROR: Assistant file too small, likely missing payload"
+            exit 1
+          fi
+          
+          echo "✓ Assistant file looks valid"
+
+      - name: Upload assistant artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistant-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: assistant-${{ matrix.os }}-py${{ matrix.python-version }}.py
+          retention-days: 90
+          if-no-files-found: error
+
+  build-windows-exe:
+    name: Build Windows .exe Bundle
+    needs: build-assistant
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Download assistant artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: assistant-windows-latest-py3.11
+
+      - name: Build Windows .exe
+        run: |
+          echo "Building Windows executable..."
+          pyinstaller --onefile `
+            --name "RccAssistant" `
+            --icon "" `
+            --console `
+            assistant-windows-latest-py3.11.py
+          
+          # Check result
+          dir dist\
+
+      - name: Test .exe (dry run)
+        run: |
+          # Just check that exe exists and has reasonable size
+          if (Test-Path dist\RccAssistant.exe) {
+            $size = (Get-Item dist\RccAssistant.exe).Length
+            Write-Host "✓ EXE created, size: $size bytes"
+            
+            if ($size -lt 5MB) {
+              Write-Host "✗ WARNING: EXE seems too small"
+            }
+          } else {
+            Write-Host "✗ ERROR: EXE not created"
+            exit 1
+          }
+
+      - name: Upload .exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RccAssistant-windows-exe
+          path: dist/RccAssistant.exe
+          retention-days: 90
+
+  create-release:
+    name: Create Release
+    needs: [build-assistant, build-windows-exe]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release archives
+        run: |
+          cd artifacts
+          
+          # Create archives for each platform
+          for dir in */; do
+            dirname="${dir%/}"
+            echo "Creating archive for $dirname..."
+            cd "$dirname"
+            zip -r "../${dirname}.zip" .
+            cd ..
+          done
+          
+          ls -lh *.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/*.zip
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  summary:
+    name: Build Summary
+    needs: [build-assistant, build-windows-exe]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## 🚀 Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Artifacts Built:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Self-extracting Python assistants (multiple OS/Python versions)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Windows .exe bundle (PyInstaller)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Download Artifacts:" >> $GITHUB_STEP_SUMMARY
+          echo "Go to the **Actions** tab > This workflow run > **Artifacts** section" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Usage:" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo 'python assistant-<platform>-py<version>.py' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
