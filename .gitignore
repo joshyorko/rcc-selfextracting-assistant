@@ -2,6 +2,7 @@
 
 # Build artifacts
 assistant.py
+demo_assistant.py
 *.zip
 payload.zip
 
@@ -54,3 +55,4 @@ Thumbs.db
 robot/
 rcc.exe
 rcc
+fetch-repos-bot/
