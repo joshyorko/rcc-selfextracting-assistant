@@ -117,7 +117,7 @@ def clone_fetch_repos_bot(target_dir):
 
 
 def prebuild_holotree(rcc_path, robot_dir, rcc_home_dir):
-    """Pre-build the Holotree environment."""
+    """Pre-build the Holotree environment using 'rcc holotree vars'."""
     logger.info("")
     logger.info("=" * 70)
     logger.info("STEP 3: Pre-building Holotree Environment")
@@ -126,13 +126,12 @@ def prebuild_holotree(rcc_path, robot_dir, rcc_home_dir):
     rcc_path = Path(rcc_path)
     robot_dir = Path(robot_dir)
     rcc_home_dir = Path(rcc_home_dir)
-    robot_yaml = robot_dir / "robot.yaml"
     
     # Create RCC home directory
     rcc_home_dir.mkdir(parents=True, exist_ok=True)
     
     logger.info(f"RCC: {rcc_path}")
-    logger.info(f"Robot: {robot_yaml}")
+    logger.info(f"Robot directory: {robot_dir}")
     logger.info(f"ROBOCORP_HOME: {rcc_home_dir}")
     
     # Set environment
@@ -140,23 +139,46 @@ def prebuild_holotree(rcc_path, robot_dir, rcc_home_dir):
     env["ROBOCORP_HOME"] = str(rcc_home_dir.resolve())
     
     logger.info("")
-    logger.info("Building Holotree (this may take a few minutes)...")
+    logger.info("Pre-building Holotree environment...")
+    logger.info("Running: cd {} && rcc holotree vars".format(robot_dir))
+    logger.info("This will download Python, pip packages, and create the complete environment.")
+    logger.info("This may take 5-10 minutes on first run...")
+    logger.info("")
     
-    # Use holotree variables to materialize the environment
+    # Run 'rcc holotree vars' from the robot directory
+    # This command finds conda.yaml automatically and builds the environment
     result = subprocess.run(
-        [str(rcc_path), "holotree", "variables", str(robot_yaml)],
+        [str(rcc_path), "holotree", "vars"],
         env=env,
+        cwd=robot_dir,  # Important: run from robot directory
         capture_output=True,
         text=True,
-        timeout=300  # 5 minute timeout
+        timeout=900  # 15 minute timeout for complete build
     )
     
-    if result.returncode != 0:
-        logger.warning(f"Holotree build had non-zero exit: {result.returncode}")
-        logger.warning(f"Output: {result.stdout}")
-        logger.warning(f"Errors: {result.stderr}")
+    if result.returncode == 0:
+        logger.info("✓ Holotree environment built successfully!")
+        logger.info("")
+        
+        # Show some output from RCC
+        output_lines = result.stdout.split('\n')
+        for line in output_lines:
+            if 'SUCCESS' in line or 'Progress: 15/15' in line:
+                logger.info(f"  {line.strip()}")
+            elif 'PYTHON_EXE' in line or 'CONDA_PREFIX' in line:
+                logger.info(f"  {line.strip()}")
     else:
-        logger.info(f"✓ Holotree command executed")
+        logger.error(f"✗ Holotree build failed with exit code: {result.returncode}")
+        logger.error("")
+        if result.stdout:
+            logger.error("Output (last 50 lines):")
+            for line in result.stdout.split('\n')[-50:]:
+                logger.error(f"  {line}")
+        if result.stderr:
+            logger.error("Errors:")
+            for line in result.stderr.split('\n'):
+                logger.error(f"  {line}")
+        return False
     
     # Check if Holotree was created
     if rcc_home_dir.exists() and any(rcc_home_dir.iterdir()):
@@ -164,13 +186,56 @@ def prebuild_holotree(rcc_path, robot_dir, rcc_home_dir):
         file_count = len([f for f in files if f.is_file()])
         dir_count = len([f for f in files if f.is_dir()])
         
+        logger.info("")
         logger.info(f"✓ Holotree created at: {rcc_home_dir}")
-        logger.info(f"  Files: {file_count}")
-        logger.info(f"  Directories: {dir_count}")
+        logger.info(f"  Files: {file_count:,}")
+        logger.info(f"  Directories: {dir_count:,}")
         
         # Calculate size
         total_size = sum(f.stat().st_size for f in files if f.is_file())
         logger.info(f"  Total size: {total_size / 1024 / 1024:.2f} MB")
+        
+        # Look for key indicators of a complete environment
+        holotree_dir = rcc_home_dir / "holotree"
+        if holotree_dir.exists():
+            # Count environment spaces (directories with specific naming pattern)
+            env_spaces = [d for d in holotree_dir.iterdir() if d.is_dir() and len(d.name) > 10]
+            logger.info(f"  Environment spaces: {len(env_spaces)}")
+            
+            if env_spaces:
+                # Show info about the first environment space
+                first_space = env_spaces[0]
+                python_exe = first_space / "bin" / "python3"
+                if not python_exe.exists():
+                    python_exe = first_space / "bin" / "python"
+                
+                if python_exe.exists():
+                    logger.info(f"  ✓ Python executable found: {python_exe.relative_to(rcc_home_dir)}")
+                
+                # Check for site-packages
+                site_packages_dirs = list(first_space.rglob("site-packages"))
+                if site_packages_dirs:
+                    logger.info(f"  ✓ Found {len(site_packages_dirs)} site-packages directory(ies)")
+                    # Count packages in first site-packages
+                    sp = site_packages_dirs[0]
+                    if sp.exists():
+                        packages = [d for d in sp.iterdir() if d.is_dir() and not d.name.startswith('.')]
+                        logger.info(f"    Contains ~{len(packages)} Python packages")
+        
+        # Validation
+        logger.info("")
+        if file_count < 100:
+            logger.warning("  ⚠ WARNING: Holotree seems incomplete (very few files)")
+            logger.warning(f"  Expected: thousands of files for a complete Python environment")
+            logger.warning(f"  Actual: only {file_count} files")
+            logger.warning("  The assistant may not work in offline mode!")
+            return False
+        elif file_count < 10000:
+            logger.warning(f"  ⚠ Note: Holotree has {file_count:,} files (expected 30,000+)")
+            logger.warning("  Environment may be incomplete. Proceeding anyway...")
+            return True
+        else:
+            logger.info(f"  ✓ Holotree appears complete ({file_count:,} files)")
         
         return True
     else:
