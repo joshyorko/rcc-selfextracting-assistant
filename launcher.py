@@ -66,11 +66,15 @@ def find_payload_offset(script_path):
     """
     Find the byte offset where the ZIP payload starts.
     Returns the offset or None if marker not found.
+    
+    Note: Searches for the LAST occurrence of the marker, since the marker
+    constant is defined in the launcher source code itself.
     """
     with open(script_path, "rb") as f:
         content = f.read()
     
-    marker_pos = content.find(PAYLOAD_MARKER)
+    # Find the LAST occurrence of the marker (rfind)
+    marker_pos = content.rfind(PAYLOAD_MARKER)
     if marker_pos == -1:
         return None
     

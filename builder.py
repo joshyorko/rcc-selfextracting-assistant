@@ -151,15 +151,16 @@ def create_self_extracting_file(launcher_path, payload_zip, output_path, logger)
         with open(launcher_path, "rb") as launcher:
             out.write(launcher.read())
         
-        # Write marker comment (for human readability)
+        # Write marker comment (for human readability) - BEFORE the marker
         out.write(b"\n# " + b"=" * 70 + b"\n")
         out.write(b"# EMBEDDED PAYLOAD - DO NOT EDIT BELOW THIS LINE\n")
         out.write(b"# " + b"=" * 70 + b"\n")
+        out.write(b"# ")
         
-        # Write payload marker
+        # Write payload marker - immediately followed by ZIP data
         out.write(PAYLOAD_MARKER)
         
-        # Write payload ZIP
+        # Write payload ZIP immediately after marker (no newlines!)
         logger.info("Writing payload ZIP...")
         with open(payload_zip, "rb") as payload:
             shutil.copyfileobj(payload, out)
@@ -176,15 +177,16 @@ def create_self_extracting_file(launcher_path, payload_zip, output_path, logger)
 def add_metadata(output_path, metadata, logger):
     """
     Add metadata as a comment at the beginning of the file.
+    This must be called BEFORE create_self_extracting_file.
     
     Args:
-        output_path: Path to the assistant.py file
+        output_path: Path to the launcher.py file to add metadata to
         metadata: Dictionary of metadata to include
         logger: Logger instance
     """
-    logger.info("Adding metadata to output file...")
+    logger.info("Adding metadata to launcher...")
     
-    # Read the current content
+    # Read the launcher content
     with open(output_path, "rb") as f:
         content = f.read()
     
@@ -319,22 +321,26 @@ Example:
             logger
         )
         
-        # Create self-extracting file
-        create_self_extracting_file(
-            args.launcher,
-            payload_zip,
-            args.output,
-            logger
-        )
-        
-        # Add metadata
+        # Prepare launcher with metadata
         metadata = {
             "Build Date": datetime.now().isoformat(),
             "RCC Source": str(args.rcc.resolve()),
             "Robot Source": str(args.robot.resolve()),
             "RCC Home": str(args.rcc_home.resolve()) if args.rcc_home else "None",
         }
-        add_metadata(args.output, metadata, logger)
+        
+        # Copy launcher to temp and add metadata
+        launcher_with_metadata = temp_dir / "launcher_with_metadata.py"
+        shutil.copy(args.launcher, launcher_with_metadata)
+        add_metadata(launcher_with_metadata, metadata, logger)
+        
+        # Create self-extracting file using the launcher with metadata
+        create_self_extracting_file(
+            launcher_with_metadata,
+            payload_zip,
+            args.output,
+            logger
+        )
         
         logger.info("=" * 60)
         logger.info("Build completed successfully!")

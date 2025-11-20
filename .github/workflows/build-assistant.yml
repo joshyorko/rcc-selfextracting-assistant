@@ -82,35 +82,53 @@ jobs:
         run: |
           git clone ${{ github.event.inputs.robot_repo || 'https://github.com/joshyorko/fetch-repos-bot' }} robot-project
 
-      - name: Build Holotree (Pre-bake environment)
-        shell: bash
-        run: |
-          echo "Building Holotree for offline execution..."
-          if [ "$RUNNER_OS" == "Windows" ]; then
-            ./rcc.exe holotree variables robot-project/robot.yaml || echo "Holotree build attempted"
-          else
-            ./rcc holotree variables robot-project/robot.yaml || echo "Holotree build attempted"
-          fi
-
-      - name: Locate RCC Home
+      - name: Setup RCC Home and Build Holotree
         id: rcc-home
         shell: bash
         run: |
-          # Find where RCC stores Holotree
+          # Set up a controlled ROBOCORP_HOME for the build
           if [ "$RUNNER_OS" == "Windows" ]; then
-            RCC_HOME="$LOCALAPPDATA/robocorp"
+            BUILD_RCC_HOME="$GITHUB_WORKSPACE/rcc_home_build"
           else
-            RCC_HOME="$HOME/.robocorp"
+            BUILD_RCC_HOME="$GITHUB_WORKSPACE/rcc_home_build"
           fi
           
-          echo "rcc_home=$RCC_HOME" >> $GITHUB_OUTPUT
-          echo "RCC Home: $RCC_HOME"
+          mkdir -p "$BUILD_RCC_HOME"
+          export ROBOCORP_HOME="$BUILD_RCC_HOME"
           
-          if [ -d "$RCC_HOME" ]; then
-            echo "RCC Home exists, size:"
-            du -sh "$RCC_HOME" || echo "Could not measure size"
+          echo "ROBOCORP_HOME set to: $ROBOCORP_HOME"
+          echo "rcc_home=$BUILD_RCC_HOME" >> $GITHUB_OUTPUT
+          
+          # Build and materialize the Holotree environment
+          echo "Building Holotree for offline execution..."
+          echo "This will download and cache all dependencies..."
+          
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            # Use 'rcc run' with a dummy command to force full environment materialization
+            export ROBOCORP_HOME="$BUILD_RCC_HOME"
+            ./rcc.exe holotree variables robot-project/robot.yaml || true
+            
+            # Verify environment was created
+            if [ -d "$BUILD_RCC_HOME" ]; then
+              echo "Holotree created successfully"
+              du -sh "$BUILD_RCC_HOME" 2>/dev/null || echo "Size unknown"
+              find "$BUILD_RCC_HOME" -type f | wc -l || echo "File count unknown"
+            else
+              echo "Warning: Holotree directory not created"
+            fi
           else
-            echo "Warning: RCC Home not found at $RCC_HOME"
+            # Unix-like systems
+            export ROBOCORP_HOME="$BUILD_RCC_HOME"
+            ./rcc holotree variables robot-project/robot.yaml || true
+            
+            # Verify environment was created
+            if [ -d "$BUILD_RCC_HOME" ]; then
+              echo "Holotree created successfully"
+              du -sh "$BUILD_RCC_HOME"
+              find "$BUILD_RCC_HOME" -type f | wc -l
+            else
+              echo "Warning: Holotree directory not created"
+            fi
           fi
 
       - name: Build self-extracting assistant

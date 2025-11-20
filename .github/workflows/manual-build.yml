@@ -57,21 +57,32 @@ jobs:
         if: github.event.inputs.include_holotree == 'true'
         run: |
           echo "Pre-building Holotree for offline execution..."
-          ./rcc holotree variables robot-project/robot.yaml
+          
+          # Set up controlled ROBOCORP_HOME for the build
+          BUILD_RCC_HOME="$GITHUB_WORKSPACE/rcc_home_build"
+          mkdir -p "$BUILD_RCC_HOME"
+          export ROBOCORP_HOME="$BUILD_RCC_HOME"
+          
+          echo "ROBOCORP_HOME set to: $ROBOCORP_HOME"
+          
+          # Build Holotree by forcing environment materialization
+          ./rcc holotree variables robot-project/robot.yaml || true
           
           echo "Holotree size:"
-          du -sh ~/.robocorp || echo "Could not measure"
+          du -sh "$BUILD_RCC_HOME"
+          find "$BUILD_RCC_HOME" -type f | wc -l
 
       - name: Build self-extracting assistant
         run: |
           OUTPUT="${{ github.event.inputs.output_name }}.py"
+          BUILD_RCC_HOME="$GITHUB_WORKSPACE/rcc_home_build"
           
           echo "Building $OUTPUT..."
           
-          if [ "${{ github.event.inputs.include_holotree }}" == "true" ] && [ -d "$HOME/.robocorp" ]; then
+          if [ "${{ github.event.inputs.include_holotree }}" == "true" ] && [ -d "$BUILD_RCC_HOME" ]; then
             python builder.py \
               --rcc rcc \
-              --rcc-home "$HOME/.robocorp" \
+              --rcc-home "$BUILD_RCC_HOME" \
               --robot robot-project \
               --output "$OUTPUT"
           else
