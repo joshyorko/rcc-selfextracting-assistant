@@ -212,19 +212,21 @@ jobs:
       - name: Install PyInstaller
         run: pip install pyinstaller
 
-      - name: Download assistant artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: assistant-windows-latest-py3.11
-
-      - name: Build Windows .exe
+      - name: Build Windows .exe from launcher.py
         run: |
-          echo "Building Windows executable..."
+          echo "Building Windows executable from launcher.py..."
+          echo ""
+          echo "NOTE: PyInstaller cannot process self-extracting files with embedded"
+          echo "binary payloads because it attempts to parse the entire file as UTF-8"
+          echo "Python source code. Instead, we build an .exe from the original"
+          echo "launcher.py, which can then be distributed without the binary payload."
+          echo ""
+          
           pyinstaller --onefile `
-            --name "RccAssistant" `
+            --name "RccLauncher" `
             --icon "" `
             --console `
-            assistant-windows-latest-py3.11.py
+            launcher.py
           
           # Check result
           dir dist\
@@ -232,11 +234,11 @@ jobs:
       - name: Test .exe (dry run)
         run: |
           # Just check that exe exists and has reasonable size
-          if (Test-Path dist\RccAssistant.exe) {
-            $size = (Get-Item dist\RccAssistant.exe).Length
+          if (Test-Path dist\RccLauncher.exe) {
+            $size = (Get-Item dist\RccLauncher.exe).Length
             Write-Host "✓ EXE created, size: $size bytes"
             
-            if ($size -lt 5MB) {
+            if ($size -lt 1MB) {
               Write-Host "✗ WARNING: EXE seems too small"
             }
           } else {
@@ -247,9 +249,25 @@ jobs:
       - name: Upload .exe artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RccAssistant-windows-exe
-          path: dist/RccAssistant.exe
+          name: RccLauncher-windows-exe
+          path: dist/RccLauncher.exe
           retention-days: 90
+          
+      - name: Explanation
+        run: |
+          echo ""
+          echo "=================================="
+          echo "Build Complete"
+          echo "=================================="
+          echo ""
+          echo "The RccLauncher.exe is built from launcher.py WITHOUT the embedded payload."
+          echo "This .exe can be used as a launcher that expects the payload to be provided"
+          echo "separately or it will fail with 'No embedded payload found' error."
+          echo ""
+          echo "For distribution, use the self-extracting .py files from the"
+          echo "'build-assistant' job artifacts instead. These contain the full payload"
+          echo "and can be run with: python assistant-<platform>-py<version>.py"
+          echo ""
 
   create-release:
     name: Create Release
