@@ -224,7 +224,6 @@ jobs:
           
           pyinstaller --onefile `
             --name "RccLauncher" `
-            --icon "" `
             --console `
             launcher.py
           
